@@ -11,10 +11,13 @@ import org.jivesoftware.smack.ChatManager;
 import org.jivesoftware.smack.RosterEntry;
 import org.jivesoftware.smack.packet.Message;
 import org.jivesoftware.smack.packet.Presence;
+import org.jivesoftware.smackx.muc.MultiUserChat;
 
+import java.nio.channels.MulticastChannel;
 import java.util.ArrayList;
 import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class Controller {
     private Client client;
@@ -68,7 +71,7 @@ public class Controller {
         String username = scanner.nextLine();
         System.out.print("Contraseña: ");
         String password = scanner.nextLine();
-        boolean success = this.client.signup(username, password);
+        boolean success = this.client.signin(username, password);
         if (success) {
             System.out.println("Registro exitoso");
         } else {
@@ -119,7 +122,8 @@ public class Controller {
             System.out.println("3. Entrar a chat privado");
             System.out.println("4. Entrar a chat grupal");
             System.out.println("5. Definir mensaje de presencia");
-            System.out.println("6. Cerrar sesion\n");
+            System.out.println("6. Cerrar sesion");
+            System.out.println("7. Eliminar cuenta\n");
 
             System.out.print("Opción: ");
             int option = scanner.nextInt();
@@ -141,7 +145,7 @@ public class Controller {
 
                     RosterEntry[] contacts = client.getContacts();
                     for (int i = 0; i < contacts.length; i++) {
-                        System.out.println(i+1 + ". " + contacts[i].getUser());
+                        System.out.println(i + 1 + ". " + contacts[i].getUser());
                     }
 
                     System.out.print("\nUsuario: ");
@@ -160,6 +164,22 @@ public class Controller {
                     }
                     break;
                 case 4:
+                    this.cleanScreen();
+                    System.out.print("Ingrese el nombre del grupo con el que desea chatear: ");
+
+                    String groupName = scanner.nextLine();
+                    groupName = scanner.nextLine();
+                    System.out.println("\n\nIniciando chat grupal con " + groupName + "...");
+
+                    String finalGroupName = groupName;
+                    Thread thread2 = new Thread(() -> chatGroupRoom(finalGroupName));
+                    thread2.start();
+
+                    try {
+                        thread2.join();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
                     break;
                 case 5:
                     this.cleanScreen();
@@ -200,6 +220,13 @@ public class Controller {
                     break;
                 case 6:
                     client.logout();
+                    System.exit(0);
+                    isRunning = false;
+                    break;
+                case 7:
+                    this.cleanScreen();
+                    System.out.println("--- Eliminando cuenta ---");
+                    client.deleteAccount();
                     isRunning = false;
                     break;
             }
@@ -240,37 +267,40 @@ public class Controller {
         try {
             // Screen configuration
             Terminal terminal = new DefaultTerminalFactory().createTerminalEmulator();
+            AtomicReference<MessageModel[]> chatMessages = new AtomicReference<MessageModel[]>(new MessageModel[]{});
 
             Screen screen = new TerminalScreen(terminal);
             screen.startScreen();
             screen.doResizeIfNecessary();
-            ArrayList<MessageModel> messages = new ArrayList<>();
             StringBuilder message = new StringBuilder();
 
             AtomicInteger screenWidth = new AtomicInteger(screen.getTerminalSize().getColumns());
             AtomicInteger screenHeight = new AtomicInteger(screen.getTerminalSize().getRows());
 
-            this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), messages);
+            this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.get());
             terminal.addResizeListener((x, y) -> {
                 screenWidth.set(y.getColumns());
                 screenHeight.set(y.getRows());
-                this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), messages);
+                this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.get());
             });
 
             // Chat configuration
             ChatManager chatManager = client.getChatManager();
-            Chat chat = chatManager.createChat(username, (ch, chatMessage) -> {
-                if (chatMessage.getBody() != null) {
-                    messages.add(new MessageModel(
-                            chatMessage.getFrom().split("@")[0],
-                            chatMessage.getTo(),
-                            chatMessage.getBody(),
-                            chatMessage.getType()
-                    ));
-                    this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), messages);
-                }
-            });
+            Chat chat = chatManager.createChat(username, null);
 
+
+            // messages change listener
+            client.setMessageChangeList((allMessages) -> {
+                // filteredMessages
+                ArrayList<MessageModel> filteredMessages = new ArrayList();
+                for (MessageModel m : allMessages) {
+                    if (m.getType() == Message.Type.chat && (m.getFrom().split("/")[0].equals(username) || (m.getTo().equals(username) && m.getFrom().equals("Yo")))) {
+                        filteredMessages.add(m);
+                    }
+                }
+                chatMessages.set(filteredMessages.toArray(new MessageModel[]{}));
+                this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.get());
+            });
 
             while (true) {
                 Character input = screen.readInput().getCharacter();
@@ -280,14 +310,18 @@ public class Controller {
                         System.out.println("Saliendo del chat...");
                         screen.close();
                         break;
+                    } else if (message.toString().equals("/file")) {
+
                     } else {
                         chat.sendMessage(message.toString());
-                        messages.add(new MessageModel(
-                                "Yo",
-                                username,
-                                message.toString(),
-                                Message.Type.chat
-                        ));
+                        client.addMessage(
+                                new MessageModel(
+                                        "Yo",
+                                        username,
+                                        message.toString(),
+                                        Message.Type.chat
+                                )
+                        );
                         message.setLength(0);
                     }
                 } else if (input == '\b') {
@@ -297,7 +331,78 @@ public class Controller {
                 } else {
                     if (input != null) message.append(input);
                 }
-                this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), messages);
+                this.drawChatScreen(screen, username, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.get());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            System.out.println("Error al iniciar chat");
+
+        }
+        client.setMessageChangeList(null);
+    }
+
+    private void chatGroupRoom(String room) {
+        try {
+            // Screen configuration
+            Terminal terminal = new DefaultTerminalFactory().createTerminalEmulator();
+            ArrayList<MessageModel> chatMessages = new ArrayList<>();
+
+            Screen screen = new TerminalScreen(terminal);
+            screen.startScreen();
+            screen.doResizeIfNecessary();
+            StringBuilder message = new StringBuilder();
+
+            AtomicInteger screenWidth = new AtomicInteger(screen.getTerminalSize().getColumns());
+            AtomicInteger screenHeight = new AtomicInteger(screen.getTerminalSize().getRows());
+
+            this.drawChatScreen(screen, room, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.toArray(new MessageModel[]{}));
+            terminal.addResizeListener((x, y) -> {
+                screenWidth.set(y.getColumns());
+                screenHeight.set(y.getRows());
+                this.drawChatScreen(screen, room, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.toArray(new MessageModel[]{}));
+            });
+
+            // Chat configuration
+            MultiUserChat muc = new MultiUserChat(client.getConnection(), room + "@conference.alumchat.fun");
+            muc.join(client.getConnection().getUser());
+
+            muc.addMessageListener((packet -> {
+                Message messagePacket = (Message) packet;
+                String[] from = messagePacket.getFrom().split("/");
+                chatMessages.add(
+                        new MessageModel(
+                                from[from.length - 1],
+                                messagePacket.getTo(),
+                                messagePacket.getBody(),
+                                messagePacket.getType()
+                        )
+                );
+            this.drawChatScreen(screen, room, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.toArray(new MessageModel[]{}));
+
+            }));
+
+            while (true) {
+                Character input = screen.readInput().getCharacter();
+
+                if (input == '\n') {
+                    if (message.toString().equals("/exit")) {
+                        System.out.println("Saliendo del chat...");
+                        screen.close();
+                        break;
+                    } else if (message.toString().equals("/file")) {
+
+                    } else {
+                        muc.sendMessage(message.toString());
+                        message.setLength(0);
+                    }
+                } else if (input == '\b') {
+                    if (message.length() > 0) {
+                        message.deleteCharAt(message.length() - 1);
+                    }
+                } else {
+                    if (input != null) message.append(input);
+                }
+                this.drawChatScreen(screen, room, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.toArray(new MessageModel[]{}));
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -306,7 +411,7 @@ public class Controller {
         }
     }
 
-    private void drawChatScreen(Screen screen, String username, String message, int height, int width, ArrayList<MessageModel> messages) {
+    private void drawChatScreen(Screen screen, String username, String message, int height, int width, MessageModel[] messages) {
         try {
             screen.clear();
             screen.doResizeIfNecessary();
@@ -351,9 +456,9 @@ public class Controller {
             // last messageCount messages from messages
             ArrayList<MessageModel> messagesToDraw = new ArrayList<>();
 
-            int initialIndex = messages.size() > messageCount ? messages.size() - messageCount : 0;
-            for (int i = initialIndex; i < messages.size(); i++) {
-                messagesToDraw.add(messages.get(i));
+            int initialIndex = messages.length > messageCount ? messages.length - messageCount : 0;
+            for (int i = initialIndex; i < messages.length; i++) {
+                messagesToDraw.add(messages[i]);
             }
 
             for (int i = 0; i < messagesToDraw.size(); i++) {
