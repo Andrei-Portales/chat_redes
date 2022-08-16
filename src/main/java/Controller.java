@@ -11,10 +11,15 @@ import org.jivesoftware.smack.ChatManager;
 import org.jivesoftware.smack.RosterEntry;
 import org.jivesoftware.smack.packet.Message;
 import org.jivesoftware.smack.packet.Presence;
+import org.jivesoftware.smackx.filetransfer.*;
 import org.jivesoftware.smackx.muc.MultiUserChat;
 
+import javax.swing.*;
+import java.io.File;
+import java.io.FileInputStream;
 import java.nio.channels.MulticastChannel;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -310,7 +315,32 @@ public class Controller {
                         System.out.println("Saliendo del chat...");
                         screen.close();
                         break;
-                    } else if (message.toString().equals("/file")) {
+                    } else if (message.toString().startsWith("/file")) {
+                        try {
+                            final JFileChooser fc = new JFileChooser();
+                            int returnVal = fc.showOpenDialog(null);
+
+                            if (returnVal == JFileChooser.APPROVE_OPTION) {
+                                File file = fc.getSelectedFile();
+                                System.out.println("Enviando archivo...");
+
+                                if (file.exists()) {
+                                    FileTransferManager transferManager = new FileTransferManager(client.getConnection());
+                                    OutgoingFileTransfer transfer = transferManager.createOutgoingFileTransfer(username);
+                                    transfer.sendFile(file, "Archivo de " + file.getName());
+
+                                    System.out.println("Archivo enviado");
+
+                                } else {
+                                    System.out.println("Archivo no encontrado...");
+                                }
+
+                            }
+
+                            message.setLength(0);
+                        } catch (Exception e) {
+                            e.printStackTrace();
+                        }
 
                     } else {
                         chat.sendMessage(message.toString());
@@ -377,7 +407,7 @@ public class Controller {
                                 messagePacket.getType()
                         )
                 );
-            this.drawChatScreen(screen, room, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.toArray(new MessageModel[]{}));
+                this.drawChatScreen(screen, room, message.toString(), screenHeight.get(), screenWidth.get(), chatMessages.toArray(new MessageModel[]{}));
 
             }));
 
